@@ -6,10 +6,11 @@ It is one Swift file with no dependencies.
 
 ## How it works
 
-- The first time you store a secret, whorlpass creates a P-256 key inside the Secure Enclave. The key requires Touch ID for every use (`.biometryAny`) and is only usable while the Mac is unlocked (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`).
-- Each secret is encrypted to that key (ephemeral P-256 key agreement, HKDF-SHA256, AES-GCM) and saved in `~/.local/share/whorlpass/secrets/`.
+- The first time you store a secret, whorlpass creates a P-256 key inside the Secure Enclave. Every decrypt needs Touch ID (`.biometryAny`), and the key only works while the Mac is unlocked (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`). Storing a secret only uses the public key, so it does not prompt.
+- Each secret is encrypted to that key (ephemeral P-256 key agreement, HKDF-SHA256, AES-GCM) and saved in `~/.local/share/whorlpass/secrets/`. The secret's name is authenticated too, so a file renamed to another name will not decrypt.
 - The private key never leaves the Secure Enclave. The encrypted files and the key file are useless on any other Mac.
-- Copied passwords are marked with the `org.nspasteboard.ConcealedType` and `TransientType` types, so well-behaved clipboard managers skip them. The clipboard is cleared after 30 seconds unless you copied something else in the meantime.
+- Copied passwords stay off Universal Clipboard (`.currentHostOnly`), so they do not sync to your other Apple devices. They are also marked with the `org.nspasteboard.ConcealedType` and `TransientType` types, so well-behaved clipboard managers skip them.
+- A separate background process clears the clipboard after 30 seconds unless you copied something else in the meantime. If that process cannot be started, the clipboard is cleared right away and the copy reports an error. This is best effort: if the Mac sleeps or the process is killed, the clear can be late or missed.
 
 ## Requirements
 
@@ -44,7 +45,7 @@ whorlpass set
 
 The name defaults to `default`. The hotkey always copies `default`.
 
-After the hotkey, a "Tink" sound means the password was copied. A "Basso" sound means Touch ID was cancelled or there is no secret named `default`. Details go to `~/.local/share/whorlpass/agent.log`.
+After the hotkey, a "Tink" sound means the password was copied. A "Basso" sound means something failed: usually Touch ID was cancelled or there is no secret named `default`. Details go to `~/.local/share/whorlpass/agent.log`.
 
 ## Limits and threat model
 
@@ -54,8 +55,9 @@ whorlpass protects a secret from someone who copies your files, steals a backup,
 - **No password fallback.** If Touch ID is unavailable, so is the secret. With the lid closed you need a keyboard with Touch ID.
 - **New fingerprints work.** The key uses `.biometryAny`, so a fingerprint added later can also unlock it. Anyone who knows your login password can add one.
 - **Malware running as you is out of scope.** The binary and LaunchAgent live in folders you can write to. Malware could replace them with a version that shows a real Touch ID prompt and then keeps the password.
-- **The clipboard is shared.** Any app can read the clipboard during those 30 seconds.
+- **The clipboard is shared.** Any app on this Mac can read the clipboard during those 30 seconds.
 - **`rm` does not ask for Touch ID.** Anything running as you can delete a secret.
+- **Plaintext lives in memory briefly.** After a decrypt, Swift may keep copies of the secret in memory that are not wiped. Typed secrets are limited to 4095 bytes.
 
 ## Uninstall
 
@@ -63,7 +65,7 @@ whorlpass protects a secret from someone who copies your files, steals a backup,
 ./uninstall.sh
 ```
 
-This stops the agent and removes the command. Your key and secrets stay in `~/.local/share/whorlpass` until you delete that folder.
+This stops the agent and removes the command. If you installed with a custom `PREFIX`, set the same `PREFIX` here. Your key and secrets stay in `~/.local/share/whorlpass` until you delete that folder.
 
 ## License
 

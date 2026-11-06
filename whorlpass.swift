@@ -125,14 +125,16 @@ let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"
 let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 
 /// Copies the secret, marked so clipboard managers skip it. Returns the change count.
-func copyToClipboard(_ secret: String) -> Int {
+func copyToClipboard(_ secret: String) throws -> Int {
     let pasteboard = NSPasteboard.general
-    pasteboard.clearContents()
+    // currentHostOnly keeps the secret off Universal Clipboard, so it never
+    // reaches other devices signed in to the same Apple Account.
+    _ = pasteboard.prepareForNewContents(with: .currentHostOnly)
     let item = NSPasteboardItem()
     item.setString(secret, forType: .string)
     item.setData(Data(), forType: concealedType)
     item.setData(Data(), forType: transientType)
-    pasteboard.writeObjects([item])
+    guard pasteboard.writeObjects([item]) else { throw WhorlpassError("could not write to the clipboard") }
     return pasteboard.changeCount
 }
 
@@ -142,9 +144,18 @@ func clearClipboard(ifChangeCount count: Int) {
     if pasteboard.changeCount == count { pasteboard.clearContents() }
 }
 
+/// Clears the clipboard after `clearSeconds` from a separate process, so the clear
+/// still happens if this process exits first. If that cannot be set up, clears now.
+func scheduleClear(changeCount: Int) throws {
+    guard spawnDetachedClear(changeCount: changeCount) else {
+        clearClipboard(ifChangeCount: changeCount)
+        throw WhorlpassError("could not schedule the clipboard clear, so it was cleared now")
+    }
+}
+
 /// Runs `whorlpass __clear <count>` in its own session so it outlives this process.
-func spawnDetachedClear(changeCount: Int) {
-    guard let exe = Bundle.main.executablePath else { return }
+func spawnDetachedClear(changeCount: Int) -> Bool {
+    guard let exe = Bundle.main.executablePath else { return false }
     var attr: posix_spawnattr_t?
     posix_spawnattr_init(&attr)
     posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
@@ -155,10 +166,11 @@ func spawnDetachedClear(changeCount: Int) {
     posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
     let args = [exe, "__clear", String(changeCount)].map { strdup($0) } + [nil]
     var pid: pid_t = 0
-    posix_spawn(&pid, exe, &actions, &attr, args, environ)
+    let status = posix_spawn(&pid, exe, &actions, &attr, args, environ)
     args.forEach { free($0) }
     posix_spawn_file_actions_destroy(&actions)
     posix_spawnattr_destroy(&attr)
+    return status == 0
 }
 
 // MARK: Reading a new secret
@@ -217,14 +229,12 @@ final class Agent {
             let result = Result { try decrypt(name: defaultName) }
             DispatchQueue.main.async {
                 self.busy = false
-                switch result {
-                case .success(let data):
-                    let count = copyToClipboard(String(decoding: data, as: UTF8.self))
+                do {
+                    let data = try result.get()
+                    let count = try copyToClipboard(String(decoding: data, as: UTF8.self))
+                    try scheduleClear(changeCount: count)
                     NSSound(named: "Tink")?.play()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(clearSeconds)) {
-                        clearClipboard(ifChangeCount: count)
-                    }
-                case .failure(let error):
+                } catch {
                     NSSound(named: "Basso")?.play()
                     FileHandle.standardError.write(Data("whorlpass: \(error)\n".utf8))
                 }
@@ -253,8 +263,8 @@ do {
         if isatty(STDOUT_FILENO) != 0 { print() }
     case "copy":
         let data = try decrypt(name: try validName(nameArg))
-        let count = copyToClipboard(String(decoding: data, as: UTF8.self))
-        spawnDetachedClear(changeCount: count)
+        let count = try copyToClipboard(String(decoding: data, as: UTF8.self))
+        try scheduleClear(changeCount: count)
         print("Copied. Clipboard clears in \(clearSeconds)s.")
     case "list":
         let files = (try? FileManager.default.contentsOfDirectory(atPath: secretsDir.path)) ?? []
