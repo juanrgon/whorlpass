@@ -40,31 +40,18 @@ swiftc -O -o "$bin" whorlpass.swift
 
 if [ "$install_agent" = true ]; then
   mkdir -p "$(dirname "$plist")"
-  cat > "$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>$label</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>$bin</string>
-		<string>agent</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<true/>
-	<key>LimitLoadToSessionType</key>
-	<string>Aqua</string>
-	<key>ProcessType</key>
-	<string>Interactive</string>
-	<key>StandardErrorPath</key>
-	<string>$data_dir/agent.log</string>
-</dict>
-</plist>
-EOF
+  # Build the plist with plutil so paths are escaped correctly.
+  rm -f "$plist"
+  plutil -create xml1 "$plist"
+  plutil -insert Label -string "$label" "$plist"
+  plutil -insert ProgramArguments -array "$plist"
+  plutil -insert ProgramArguments.0 -string "$bin" "$plist"
+  plutil -insert ProgramArguments.1 -string agent "$plist"
+  plutil -insert RunAtLoad -bool true "$plist"
+  plutil -insert KeepAlive -bool true "$plist"
+  plutil -insert LimitLoadToSessionType -string Aqua "$plist"
+  plutil -insert ProcessType -string Interactive "$plist"
+  plutil -insert StandardErrorPath -string "$data_dir/agent.log" "$plist"
   plutil -lint "$plist" >/dev/null
   launchctl bootout "$domain/$label" 2>/dev/null || true
   launchctl bootstrap "$domain" "$plist"
